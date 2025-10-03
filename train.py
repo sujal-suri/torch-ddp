@@ -26,7 +26,7 @@ class Config:
     lr: float = 1e-3
     train_batch_size: int = 64
     valid_batch_size: int = 128
-    num_epochs: int = 50
+    num_epochs: int = 1
     wd: float= 1e-5
     outputs: str = "./checkpoints"
     device = "cuda" if torch.cuda.is_available() else "cpu"
