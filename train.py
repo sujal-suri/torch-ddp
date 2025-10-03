@@ -1,3 +1,4 @@
+import os
 import torch
 import torchvision
 import torch.nn as nn
@@ -7,6 +8,8 @@ from torch.utils.data import Dataset, DataLoader
 from torchvision import transforms
 from tqdm import tqdm
 import matplotlib.pyplot as plt
+
+
 
 class TinyImageNet(Dataset):
     def __init__(self, split: str="train") -> None:
@@ -56,17 +59,17 @@ def valid_epoch(cfg, model, valid_dataloader, loss_fn):
     with torch.inference_mode():
         for _, batch in enumerate(tqdm(valid_dataloader)):
             input, labels = batch
-            input, labels = input.to(cfg.device), labels.to(device)
+            input, labels = input.to(cfg.device), labels.to(cfg.device)
             outputs = model(input)
             loss = loss_fn(outputs, labels)
             # \sum_{i=1}^{n+1} = \frac{\sum_{i=1}^{n} \cdot (n) + a_{n+1}}{n+1}
             valid_loss = (valid_loss * _ + loss)/(_ + 1)
 
-    return epoch_loss        
+    return valid_loss        
 
 def plot_history(cfg: Config, train_loss:list , valid_loss: list) -> None:
-    plt.plot(x=list(range(len(train_loss))), y=train_loss, color='red', label='Train Loss')
-    plt.plot(x=list(range(len(valid_loss))), y=valid_loss, color='blue', label='Valid Loss')
+    plt.plot(list(range(len(train_loss))), train_loss, color='red', label='Train Loss')
+    plt.plot(list(range(len(valid_loss))), valid_loss, color='blue', label='Valid Loss')
 
     plt.xlabel('Epochs')
     plt.ylabel('Loss')
@@ -96,11 +99,10 @@ def train(cfg: Config, model: nn.Module, train: Dataset, valid: Dataset):
                 "epoch": epoch,
                 "model_state_dict": model.state_dict(),
                 "optimizer_state_dict": optimizer.state_dict(),
-                "loss": loss,                                    
             }, f"{cfg.outputs}/best_model/checkpoint.pth")
             
-        training_losses.append(train_loss)
-        valid_losses.append(val_loss)
+        training_losses.append(train_loss.clone().detach().cpu().numpy())
+        valid_losses.append(val_loss.clone().detach().cpu().numpy())
 
         print(f"Training epoch: {epoch+1}| train_loss: {train_loss:.3f}, valid_loss: {val_loss:.3f}")
 
@@ -108,7 +110,6 @@ def train(cfg: Config, model: nn.Module, train: Dataset, valid: Dataset):
     torch.save({
         "model_state_dict": model.state_dict(),
         "optimizer_state_dict": optimizer.state_dict(),
-        "loss": loss,                                    
     }, f"{cfg.outputs}/final_model/checkpoint.pth")
 
     plot_history(cfg, training_losses, valid_losses)
@@ -119,6 +120,8 @@ def main():
     model = torchvision.models.resnet50(weights=None, progress=True)
     model.fc = nn.Linear(2048, 500)
 
+    os.makedirs(f"{cfg.outputs}/best_model", exist_ok=True)
+    os.makedirs(f"{cfg.outputs}/final_model", exist_ok=True)
     model.to(cfg.device)
     train_dataset = TinyImageNet("train")
     valid_dataset = TinyImageNet("valid")
