@@ -1,3 +1,5 @@
+torch==2.7.1
+torchvision==0.22.1
 aiohappyeyeballs
 aiohttp
 aiosignal
@@ -37,8 +39,6 @@ PyYAML
 requests
 six
 sympy
-torch
-torchvision
 tqdm
 typing_extensions
 tzdata
