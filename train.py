@@ -51,7 +51,7 @@ def train_one_epoch(cfg, model, train_dataloader, optimizer, loss_fn):
 
     for _, batch in enumerate(train_dataloader):
         input, labels = batch
-        input, labels = input.to(cfg.device), labels.to(cfg.device)
+        input, labels = input.to(cfg.gpu_rank), labels.to(cfg.gpu_rank)
         optimizer.zero_grad()
         outputs = model(input)
         loss = loss_fn(outputs, labels)
@@ -70,7 +70,7 @@ def valid_epoch(cfg, model, valid_dataloader, loss_fn):
     with torch.inference_mode():
         for _, batch in enumerate(valid_dataloader):
             input, labels = batch
-            input, labels = input.to(cfg.device), labels.to(cfg.device)
+            input, labels = input.to(cfg.gpu_rank), labels.to(cfg.gpu_rank)
             outputs = model(input)
             loss = loss_fn(outputs, labels)
             # \sum_{i=1}^{n+1} = \frac{\sum_{i=1}^{n} \cdot (n) + a_{n+1}}{n+1}
@@ -93,17 +93,17 @@ def prepare_dataloader(cfg, dataset, split):
     world_size, gpu_rank = cfg.world_size, cfg.gpu_rank
     sampler = DistributedSampler(dataset, num_replicas=world_size, rank=gpu_rank, shuffle=False, drop_last=False)
     bsz = cfg.train_batch_size if split == "train" else cfg.valid_batch_size
-    dataloader = DataLoader(dataset, batch_size = split, pin_memory=False, drop_last=False, shuffle=False, sampler=sampler, num_workers=0)
+    dataloader = DataLoader(dataset, batch_size = bsz, pin_memory=False, drop_last=False, shuffle=False, sampler=sampler, num_workers=0)
     return dataloader
 
 def train(cfg: Config, model: nn.Module, train_dataloader: DataLoader, valid_dataloader: DataLoader):
     loss_fn = nn.CrossEntropyLoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=cfg.lr, weight_decay=cfg.wd)
 
-    best_val_loss = None
+    best_valid_loss = None
     training_losses, valid_losses = None, None
-    if(cfg.rank == 0):
-        best_val_loss = float('inf')
+    if(cfg.gpu_rank == 0):
+        best_valid_loss = float('inf')
         training_losses, valid_losses = [], []
 
     for epoch in range(cfg.num_epochs):
@@ -114,18 +114,26 @@ def train(cfg: Config, model: nn.Module, train_dataloader: DataLoader, valid_dat
         valid_loss = valid_epoch(cfg, model, valid_dataloader, loss_fn)
              
         train_loss_gather_list = None
+        train_loss = train_one_epoch(cfg, model, train_dataloader, optimizer, loss_fn)
+        valid_loss = valid_epoch(cfg, model, valid_dataloader, loss_fn)
+             
+        train_loss_gather_list = None
         valid_loss_gather_list = None
-        if(dist.get_rank == 0):
+        if(dist.get_rank() == 0):
+            train_loss_gather_list = [torch.zeros_like(train_loss) for _ in range(cfg.world_size)]
+            valid_loss_gather_list = [torch.zeros_like(valid_loss) for _ in range(cfg.world_size)]
+        valid_loss_gather_list = None
+        if(dist.get_rank() == 0):
             train_loss_gather_list = [torch.zeros_like(train_loss) for _ in range(cfg.world_size)]
             valid_loss_gather_list = [torch.zeros_like(valid_loss) for _ in range(cfg.world_size)]
 
         dist.gather(tensor = train_loss, gather_list = train_loss_gather_list, dst = 0)
         dist.gather(tensor = valid_loss, gather_list = valid_loss_gather_list, dst = 0)
 
-        valid_loss = torch.mean(torch.stack(valid_loss_gather_list))
-        train_loss = torch.mean(torch.stack(train_loss_gather_list))
         
-        if(cfg.rank == 0):
+        if(cfg.gpu_rank == 0):
+            valid_loss = torch.mean(torch.stack(valid_loss_gather_list))
+            train_loss = torch.mean(torch.stack(train_loss_gather_list))
             if(valid_loss < best_valid_loss):
                 print(f"Saving Best Model at {cfg.outputs}/best_model")
                 best_valid_loss = valid_loss
@@ -140,7 +148,7 @@ def train(cfg: Config, model: nn.Module, train_dataloader: DataLoader, valid_dat
 
             print(f"Training epoch: {epoch+1}| train_loss: {train_loss:.3f}, valid_loss: {valid_loss:.3f}")
 
-    if(cfg.rank == 0):
+    if(cfg.gpu_rank == 0):
         print("Saving the Final Model at {cfg.outputs}/final_model")
         torch.save({
             "model_state_dict": model.state_dict(),
@@ -150,7 +158,7 @@ def train(cfg: Config, model: nn.Module, train_dataloader: DataLoader, valid_dat
         plot_history(cfg, training_losses, valid_losses)
 
 def cleanup():
-    dist.destory_process_group()
+    dist.destroy_process_group()
     
 def main(rank, world_size):
     cfg = Config(gpu_rank=rank, world_size=world_size)
@@ -163,7 +171,7 @@ def main(rank, world_size):
     model.fc = nn.Linear(2048, 500)
 
     model.to(rank)
-    model = DDP(model, device_ids=[rank], output_device=rank, find_unused_parameters=True)
+    model = DDP(model, device_ids=[rank], output_device=rank, find_unused_parameters=False)
 
     train_dataloader = prepare_dataloader(cfg, TinyImageNet("train"), "train") 
     valid_dataloader = prepare_dataloader(cfg, TinyImageNet("valid"), "valid")
@@ -173,9 +181,8 @@ def main(rank, world_size):
 
 if __name__ == "__main__":
     world_size = 2
-
     mp.spawn(
             main,
-            args = (world_size),
+            args = (world_size,),
             nprocs = world_size
             )
